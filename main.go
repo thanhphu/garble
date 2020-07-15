@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/gob"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -96,32 +97,75 @@ var (
 	envGarbleDebugDir = os.Getenv("GARBLE_DEBUGDIR")
 	envGarbleSeed     = os.Getenv("GARBLE_SEED")
 	envGoPrivate      string // filled via 'go env' below to support 'go env -w'
+	envGarbleListPkgs = os.Getenv("GARBLE_LISTPKGS")
 
 	seed []byte
 )
 
-type listedPackage struct {
-	Export string
-	Deps   []string
+func saveListedPackages(w io.Writer, patterns ...string) error {
+	args := []string{"list", "-json", "-deps", "-export"}
+	args = append(args, patterns...)
+	cmd := exec.Command("go", args...)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("go list error: %v", err)
+	}
+	dec := json.NewDecoder(stdout)
+	listedPackages = make(map[string]*listedPackage)
+	for dec.More() {
+		var pkg listedPackage
+		if err := dec.Decode(&pkg); err != nil {
+			return err
+		}
+		listedPackages[pkg.ImportPath] = &pkg
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("go list error: %v: %s", err, stderr.Bytes())
+	}
+	if err := gob.NewEncoder(w).Encode(listedPackages); err != nil {
+		return err
+	}
+	return nil
 }
 
-// listPackage is a simple wrapper around 'go list -json'.
-func listPackage(path string) (listedPackage, error) {
-	var pkg listedPackage
-	cmd := exec.Command("go", "list", "-json", "-export", path)
-	if envGarbleDir == "" {
-		return pkg, fmt.Errorf("$GARBLE_DIR unset; did you run via 'garble build'?")
-	}
-	cmd.Dir = envGarbleDir
-	out, err := cmd.Output()
-	if err != nil {
-		if err, _ := err.(*exec.ExitError); err != nil {
-			return pkg, fmt.Errorf("go list error: %v: %s", err, err.Stderr)
+// listedPackages contains data obtained via 'go list -json -export -deps'. This
+// allows us to obtain the non-garbled export data of all dependencies, useful
+// for type checking of the packages as we obfuscate them.
+//
+// Note that we obtain this data once in saveListedPackages, store it into a
+// temporary file via gob encoding, and then reuse that file in each of the
+// garble processes that wrap a package compilation.
+var listedPackages map[string]*listedPackage
+
+type listedPackage struct {
+	ImportPath string
+	Export     string
+	Deps       []string
+}
+
+func listPackage(path string) (*listedPackage, error) {
+	if listedPackages == nil {
+		f, err := os.Open(envGarbleListPkgs)
+		if err != nil {
+			return nil, err
 		}
-		return pkg, fmt.Errorf("go list error: %v", err)
+		defer f.Close()
+		if err := gob.NewDecoder(f).Decode(&listedPackages); err != nil {
+			return nil, err
+		}
 	}
-	if err := json.Unmarshal(out, &pkg); err != nil {
-		return pkg, err
+	pkg, ok := listedPackages[path]
+	if !ok {
+		return nil, fmt.Errorf("path not found in listed packages: %s", path)
 	}
 	return pkg, nil
 }
@@ -239,6 +283,20 @@ func mainErr(args []string) error {
 				path := string(bytes.TrimSpace(modpath))
 				os.Setenv("GOPRIVATE", path+","+path+"_test")
 			}
+		}
+
+		f, err := ioutil.TempFile("", "garble-list-deps")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		// TODO: need to carefully separate flags from packages.
+		if err := saveListedPackages(f, args[1:]...); err != nil {
+			return err
+		}
+		os.Setenv("GARBLE_LISTPKGS", f.Name())
+		if err := f.Close(); err != nil {
+			return err
 		}
 
 		execPath, err := os.Executable()
