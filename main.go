@@ -29,7 +29,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/ast/astutil"
-	"mvdan.cc/garble/internal/literals"
+
+	"github.com/thanhphu/garble/internal/literals"
 )
 
 var flagSet = flag.NewFlagSet("garble", flag.ContinueOnError)
