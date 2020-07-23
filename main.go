@@ -219,7 +219,7 @@ func mainErr(args []string) error {
 			}
 
 			if info, err := os.Stat(flagDebugDir); os.IsNotExist(err) {
-				err := os.MkdirAll(flagDebugDir, 0o755)
+				err := os.MkdirAll(flagDebugDir, 0755)
 				if err != nil {
 					return err
 				}
@@ -424,7 +424,7 @@ func transformCompile(args []string) ([]string, error) {
 	if envGarbleDebugDir != "" {
 		osPkgPath := filepath.FromSlash(pkgPath)
 		pkgDebugDir = filepath.Join(envGarbleDebugDir, osPkgPath)
-		err = os.MkdirAll(pkgDebugDir, 0o755)
+		err = os.MkdirAll(pkgDebugDir, 0755)
 		if err != nil {
 			return nil, err
 		}
